@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { API_BASE } from '../api'
 import { getAuth } from '../utils/auth'
 import './StudentDashboard.css'
 import '../styles/status.css'
@@ -23,7 +24,7 @@ export default function StudentDashboard() {
     if (!user) return
     setLoading(true)
     try {
-      const res = await fetch(`http://localhost:5000/complaints/student/${user.id}`)
+      const res = await fetch(`${API_BASE}/complaints/student/${user.id}`)
       const data = await res.json()
       setComplaints(Array.isArray(data) ? data : [])
     } catch {
@@ -62,7 +63,7 @@ export default function StudentDashboard() {
     }
 
     try {
-      const res = await fetch('http://localhost:5000/complaints', {
+      const res = await fetch(API_BASE + '/complaints', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -95,7 +96,7 @@ export default function StudentDashboard() {
     }
 
     try {
-      const res = await fetch(`http://localhost:5000/complaints/${editing.id}`, {
+      const res = await fetch(`${API_BASE}/complaints/${editing.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -113,7 +114,7 @@ export default function StudentDashboard() {
   async function deleteComplaint(id) {
     if (!window.confirm('Delete this complaint?')) return
     try {
-      const res = await fetch(`http://localhost:5000/complaints/${id}`, { method: 'DELETE' })
+      const res = await fetch(`${API_BASE}/complaints/${id}`, { method: 'DELETE' })
       if (!res.ok) throw new Error()
       setComplaints(prev => prev.filter(c => c.id !== id))
     } catch {

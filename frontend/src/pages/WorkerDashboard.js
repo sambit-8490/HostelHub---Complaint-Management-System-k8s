@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { API_BASE } from '../api'
 import { getAuth } from '../utils/auth'
 import './WorkerDashboard.css'
 import '../styles/status.css'
@@ -16,7 +17,7 @@ export default function WorkerDashboard() {
     if (!user) return
     setLoading(true)
     try {
-      const res = await fetch('http://localhost:5000/complaints/all')
+      const res = await fetch(API_BASE + '/complaints/all')
       const data = await res.json()
       setComplaints(Array.isArray(data) ? data : [])
     } catch {
@@ -32,7 +33,7 @@ export default function WorkerDashboard() {
     }
     
     try {
-      const res = await fetch(`http://localhost:5000/complaints/${id}/status`, {
+      const res = await fetch(`${API_BASE}/complaints/${id}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)

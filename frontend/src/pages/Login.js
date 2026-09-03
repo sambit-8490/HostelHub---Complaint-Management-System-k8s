@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { API_BASE } from '../api'
 import { useNavigate } from 'react-router-dom'
 import { setAuth } from '../utils/auth'
 import './Login.css'
@@ -11,7 +12,7 @@ export default function Login() {
   async function onSubmit(e) {
     e.preventDefault()
     try {
-      const res = await fetch('http://localhost:5000/auth/login', {
+      const res = await fetch(API_BASE + '/auth/login', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ role, ...cred })

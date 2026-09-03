@@ -175,6 +175,37 @@ npm run build
 - Frontend: Deploy to Netlify, Vercel, or similar
 - Database: Use MongoDB Atlas for production
 
+### Kubernetes (Minikube)
+
+For local Kubernetes deployment, `k8s.yaml` defines MongoDB, backend, and frontend as separate Deployments/Services.
+
+#### 1. Build images into minikube's Docker daemon
+```bash
+eval $(minikube docker-env)
+docker build -t hostelhub:backend ./backend
+docker build -t hostelhub:frontend ./frontend
+```
+
+#### 2. Apply manifests
+```bash
+kubectl apply -f k8s.yaml
+```
+
+#### 3. Get the access URLs
+```bash
+minikube ip
+kubectl get svc
+```
+Services are exposed via NodePort:
+- Backend: `http://<minikube-ip>:30001`
+- Frontend: `http://<minikube-ip>:30003`
+
+#### Verify pods are running
+```bash
+kubectl get pods
+kubectl logs pod/<pod-name>
+```
+
 ## Contributing
 
 1. Fork the repository

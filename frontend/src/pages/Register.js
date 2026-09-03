@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { API_BASE } from '../api'
 import './Register.css'
 export default function Register() {
   const [role, setRole] = useState('student')
@@ -8,7 +9,7 @@ export default function Register() {
   async function onSubmit(e) {
     e.preventDefault()
     try {
-      const res = await fetch('http://localhost:5000/auth/register', {
+      const res = await fetch(API_BASE + '/auth/register', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ role, ...form })
