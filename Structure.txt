@@ -1,0 +1,35 @@
+                         ┌─────────────────────────────┐
+                         │        Users (browser)        │
+                         │  Student · Warden · Worker    │
+                         └───────────────┬────────────────┘
+                                         │ HTTP
+                                         ▼
+                         ┌─────────────────────────────┐
+                         │   Frontend ALB (:80)         │
+                         └───────────────┬────────────────┘
+                                         ▼
+                         ┌─────────────────────────────┐
+                         │  Frontend service (nginx)     │
+                         │  React SPA, role-based routes  │
+                         └───────────────┬────────────────┘
+                                         │ REACT_APP_API_BASE
+                                         ▼
+                         ┌─────────────────────────────┐
+                         │   Backend ALB (:5000)         │
+                         └───────────────┬────────────────┘
+                                         ▼
+                         ┌─────────────────────────────┐
+                         │  Backend service (Express)    │
+                         │  /auth /students /warden       │
+                         │  /workers /complaints           │
+                         │  /health /health/db              │
+                         └───────┬─────────────┬────────────┘
+                                 │             │
+                     SSM GetParameters   Mongoose connection
+                                 │             │
+                                 ▼             ▼
+                  ┌───────────────────┐  ┌───────────────────┐
+                  │ SSM Parameter Store │  │ MongoDB Atlas (M0) │
+                  │ /hostelhub/mongo-uri│  │ hostelhub database  │
+                  │ /hostelhub/jwt-secret│  └───────────────────┘
+                  └───────────────────┘
