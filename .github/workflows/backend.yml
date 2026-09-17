@@ -34,4 +34,4 @@ jobs:
           context: backend
           file: backend/Dockerfile
           push: true
-          tags: <AWS_ACCOUNT_ID>.dkr.ecr.eu-west-2.amazonaws.com/hostelhub/backend:${{ github.run_number }}
+          tags: 271776746443.dkr.ecr.eu-west-2.amazonaws.com/hostelhub/backend:${{ github.run_number }}
