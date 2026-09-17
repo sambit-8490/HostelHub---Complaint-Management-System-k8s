@@ -1,17 +1,22 @@
-FROM node:18-alpine
-
-# Set working directory
+# ---- Build stage ----
+FROM node:20-alpine AS build
 WORKDIR /app
 
-# Install dependencies
 COPY package*.json ./
 RUN npm install
 
-# Copy project files
 COPY . .
 
-# Expose port 3000 for CRA dev server
-EXPOSE 3000
+ARG REACT_APP_API_BASE
+ENV REACT_APP_API_BASE=$REACT_APP_API_BASE
 
-# Start in development mode
-CMD ["npm", "start"]
+RUN npm run build
+
+# ---- Serve stage ----
+FROM nginx:alpine
+
+COPY --from=build /app/build /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
