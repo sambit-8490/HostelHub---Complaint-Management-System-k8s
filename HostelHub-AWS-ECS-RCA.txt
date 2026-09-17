@@ -1,0 +1,593 @@
+# HostelHub AWS ECS Deployment – Root Cause Analysis (RCA)
+
+**Application:** HostelHub
+**Environment:** Development
+**Cloud Platform:** AWS ECS / Fargate
+**Region:** eu-west-2 (London)
+**Date:** 17 September 2026
+**Document Type:** Root Cause Analysis
+
+---
+
+## 1. Executive Summary
+
+During deployment and testing of the HostelHub application on AWS ECS/Fargate, multiple issues were identified affecting backend availability, frontend-to-backend communication, and complaint-file uploads.
+
+The investigation identified two confirmed root causes:
+
+1. **Backend ECS tasks were failing ELB health checks** because the configured health-check path initially returned HTTP 404.
+2. **The frontend was using an incorrect API base URL** because the backend ALB hostname was configured without the `http://` protocol. As a result, the browser interpreted the backend hostname as a relative URL and sent requests to the frontend host.
+
+A third issue was subsequently identified:
+
+3. **Complaint file upload returns HTTP 413 Payload Too Large.** The request is now reaching the backend ALB, but the component rejecting the request size still needs to be confirmed. The frontend Nginx configuration currently has no explicit `client_max_body_size` setting, but because the browser posts directly to the backend ALB, the frontend Nginx configuration may not be the component responsible for the 413.
+
+---
+
+# 2. Incident Timeline
+
+## Phase 1 – Backend ECS Deployment Failure
+
+The backend ECS service experienced repeated task failures.
+
+Observed ECS message:
+
+> Task failed ELB health checks
+
+The deployment eventually reported:
+
+> ECS Deployment Circuit Breaker was triggered
+
+The backend target group initially reported:
+
+> Health checks failed with these codes: [404]
+
+### Impact
+
+* Backend ECS tasks were repeatedly stopped.
+* ECS could not maintain a healthy backend task.
+* The deployment circuit breaker prevented the deployment from becoming stable.
+
+---
+
+# 3. Root Cause – Backend Health Check
+
+The Application Load Balancer target group was checking the backend on port 5000.
+
+The configured health-check path was not returning a successful response.
+
+The target group received:
+
+```text
+HTTP 404
+```
+
+Therefore, the ALB considered the ECS task unhealthy.
+
+ECS subsequently stopped the unhealthy tasks, resulting in repeated task replacement and eventually triggering the deployment circuit breaker.
+
+### Resolution
+
+The backend was configured with a health endpoint:
+
+```text
+GET /health
+```
+
+The endpoint subsequently returned:
+
+```text
+HTTP 200
+```
+
+Backend logs confirmed:
+
+```text
+GET /health HTTP/1.1" 200
+"ELB-HealthChecker/2.0"
+```
+
+This confirmed that the ALB health check was successfully reaching the backend.
+
+### Root Cause
+
+**Incorrect/missing health-check endpoint configuration between the ALB target group and the backend application.**
+
+### Correct Configuration
+
+```text
+ALB Target Group
+        |
+        | GET /health
+        v
+Backend ECS Container :5000
+        |
+        +---- HTTP 200
+```
+
+---
+
+# 4. Frontend Registration Failure
+
+After the backend became healthy, registration from the frontend produced:
+
+```text
+Unexpected token '<', "<html> <h"... is not valid JSON
+```
+
+The browser Network tab showed:
+
+```text
+Request URL:
+http://18.175.44.125/ecs-backend-alb-1604325046.eu-west-2.elb.amazonaws.com/auth/register
+
+Method:
+POST
+
+Status:
+405 Method Not Allowed
+```
+
+This was the key evidence.
+
+---
+
+# 5. Root Cause – Incorrect API_BASE
+
+The frontend contained:
+
+```javascript
+export const API_BASE =
+  process.env.REACT_APP_API_BASE || 'http://localhost:5000'
+```
+
+The intended production value was:
+
+```text
+http://ecs-backend-alb-1604325046.eu-west-2.elb.amazonaws.com
+```
+
+However, the deployed frontend had an API base value without the protocol:
+
+```text
+ecs-backend-alb-1604325046.eu-west-2.elb.amazonaws.com
+```
+
+When JavaScript executed:
+
+```javascript
+fetch(API_BASE + '/auth/register')
+```
+
+the browser interpreted the value as a **relative URL** instead of an absolute backend URL.
+
+Therefore, instead of sending:
+
+```text
+http://ecs-backend-alb-1604325046.eu-west-2.elb.amazonaws.com/auth/register
+```
+
+the browser sent:
+
+```text
+http://18.175.44.125/ecs-backend-alb-1604325046.eu-west-2.elb.amazonaws.com/auth/register
+```
+
+The frontend web server received the request and returned an HTML error response.
+
+The React application then executed:
+
+```javascript
+const data = await res.json()
+```
+
+against the HTML response.
+
+This produced:
+
+```text
+Unexpected token '<'
+```
+
+because HTML starts with `<`, not JSON.
+
+---
+
+# 6. Resolution – Frontend API URL
+
+The GitHub Actions workflow was configured to pass the API URL into the Docker build:
+
+```yaml
+build-args: |
+  REACT_APP_API_BASE=${{ secrets.API_BASE_URL }}
+```
+
+The Dockerfile also correctly exposed the build argument:
+
+```dockerfile
+ARG REACT_APP_API_BASE
+ENV REACT_APP_API_BASE=$REACT_APP_API_BASE
+
+RUN npm run build
+```
+
+Therefore, the required correction was to set the GitHub Environment secret:
+
+```text
+API_BASE_URL
+```
+
+to:
+
+```text
+http://ecs-backend-alb-1604325046.eu-west-2.elb.amazonaws.com
+```
+
+Important requirements:
+
+* Include `http://`
+* Do not append `/auth/register`
+* Do not add an unnecessary trailing `/`
+
+---
+
+# 7. Deployment Gap Identified
+
+Although GitHub Actions successfully built and pushed the new frontend image to Amazon ECR, the workflow did not update the ECS service.
+
+The workflow performed:
+
+```text
+GitHub
+   |
+   v
+Docker Build
+   |
+   v
+Amazon ECR
+```
+
+but did not perform:
+
+```text
+ECR
+ |
+ v
+ECS Task Definition
+ |
+ v
+ECS Service Deployment
+```
+
+As a result, ECS continued running the previous frontend task definition:
+
+```text
+frontend-td:3
+```
+
+The newly built frontend image was therefore not immediately used by the running ECS service.
+
+### Root Cause
+
+**CI pipeline was configured for image build/push but not for ECS deployment.**
+
+### Resolution
+
+Create a new task definition revision containing the new ECR image and update the ECS frontend service to use that revision.
+
+Example:
+
+```text
+frontend-td:3
+      |
+      | new image
+      v
+frontend-td:4
+      |
+      v
+ECS Frontend Service
+```
+
+---
+
+# 8. Complaint File Upload – HTTP 413
+
+During complaint submission, the application attempted:
+
+```text
+POST /complaints
+```
+
+The browser reported:
+
+```text
+Status Code: 413 Payload Too Large
+```
+
+The request URL was:
+
+```text
+http://ecs-backend-alb-1604325046.eu-west-2.elb.amazonaws.com/complaints
+```
+
+This is significant because it confirms that the request is now being sent to the backend ALB rather than being incorrectly treated as a frontend-relative URL.
+
+---
+
+# 9. Current 413 Investigation
+
+HTTP 413 means:
+
+```text
+Payload Too Large
+```
+
+The request body is larger than the limit configured by the component processing the request.
+
+The current frontend Nginx configuration is:
+
+```nginx
+server {
+  listen 80;
+  server_name localhost;
+
+  root /usr/share/nginx/html;
+  index index.html;
+
+  location / {
+    try_files $uri /index.html;
+  }
+
+  error_page 404 /index.html;
+}
+```
+
+There is currently no explicit:
+
+```nginx
+client_max_body_size
+```
+
+setting.
+
+A possible Nginx configuration is:
+
+```nginx
+server {
+  listen 80;
+  server_name localhost;
+
+  client_max_body_size 20M;
+
+  root /usr/share/nginx/html;
+  index index.html;
+
+  location / {
+    try_files $uri /index.html;
+  }
+
+  error_page 404 /index.html;
+}
+```
+
+However, **this does not yet prove that frontend Nginx is responsible for the 413**.
+
+The browser is sending the complaint request directly to:
+
+```text
+ecs-backend-alb-1604325046.eu-west-2.elb.amazonaws.com
+```
+
+Therefore, the 413 may be generated by:
+
+* Backend application
+* Backend-side Nginx/reverse proxy
+* Another proxy/load-balancing layer
+* Application framework upload-size configuration
+
+### Status
+
+**Root cause not yet conclusively identified.**
+
+The next diagnostic step is to inspect the response body and backend/proxy logs for the failed `/complaints` request.
+
+---
+
+# 10. Technical Architecture
+
+Current request flow:
+
+```text
+                    Frontend
+                 ECS / Nginx
+                      |
+                      |
+                React Application
+                      |
+                      |
+                      | API request
+                      v
+        Backend Application Load Balancer
+                      |
+                      v
+                Backend Target Group
+                      |
+                      v
+              Backend ECS/Fargate
+                      |
+                      v
+                 Backend API
+```
+
+For complaint uploads:
+
+```text
+Browser
+   |
+   | POST /complaints
+   | multipart/form-data
+   v
+Backend ALB
+   |
+   v
+Backend ECS
+   |
+   v
+Complaint API
+```
+
+The 413 is generated somewhere along this request path.
+
+---
+
+# 11. Corrective Actions
+
+| Issue                          | Root Cause                                 | Corrective Action                                           | Status                 |
+| ------------------------------ | ------------------------------------------ | ----------------------------------------------------------- | ---------------------- |
+| Backend ECS tasks stopped      | ALB health check returned 404              | Configure `/health` to return HTTP 200                      | Resolved               |
+| ECS deployment circuit breaker | Tasks failed ALB health checks             | Fix health endpoint/target group health check               | Resolved               |
+| Registration returned 405      | API base URL treated as relative URL       | Set `API_BASE_URL` with `http://`                           | Resolved               |
+| JSON parsing error             | Frontend received HTML instead of API JSON | Correct API URL                                             | Resolved               |
+| New frontend image not running | CI pushed image but did not deploy ECS     | Create new task-definition revision and update ECS service  | Action required        |
+| Complaint upload returns 413   | Request exceeds a configured payload limit | Identify rejecting component and increase appropriate limit | Investigation required |
+
+---
+
+# 12. Preventive Actions
+
+## 12.1 Add API URL Validation
+
+Validate the production API URL during the frontend build.
+
+Expected format:
+
+```text
+http://hostname
+```
+
+or:
+
+```text
+https://hostname
+```
+
+This prevents accidental relative URLs.
+
+---
+
+## 12.2 Improve API Error Handling
+
+Current code assumes every response is JSON:
+
+```javascript
+const data = await res.json()
+```
+
+A safer implementation should check the response content type before parsing JSON.
+
+This prevents HTML error pages from producing confusing:
+
+```text
+Unexpected token '<'
+```
+
+errors.
+
+---
+
+## 12.3 Automate ECS Deployment
+
+The GitHub Actions workflow should eventually perform:
+
+```text
+Checkout
+   ↓
+Build Docker image
+   ↓
+Push image to ECR
+   ↓
+Register new ECS task definition
+   ↓
+Update ECS service
+   ↓
+Wait for deployment stability
+```
+
+This prevents ECR from containing a new image while ECS continues running an old task definition.
+
+---
+
+## 12.4 Configure Explicit Upload Limits
+
+Define an intentional maximum upload size across all relevant layers.
+
+For example:
+
+```text
+Client
+  ↓
+ALB / Proxy
+  ↓
+Backend Proxy
+  ↓
+Backend Application
+```
+
+All layers should have compatible limits.
+
+Example policy:
+
+```text
+Maximum complaint attachment: 20 MB
+```
+
+The exact value should be based on the application's requirements.
+
+---
+
+# 13. Verification Checklist
+
+Before considering the deployment stable, verify:
+
+### Backend
+
+* [x] ECS task remains RUNNING
+* [x] ALB target is HEALTHY
+* [x] `/health` returns HTTP 200
+* [x] Backend logs show successful health checks
+
+### Frontend
+
+* [x] `API_BASE` contains `http://` or `https://`
+* [ ] New frontend image pushed to ECR
+* [ ] New ECS task-definition revision created
+* [ ] ECS frontend service updated to new revision
+* [ ] Browser uses the new frontend bundle
+
+### Authentication
+
+* [ ] Registration request reaches backend ALB
+* [ ] `/auth/register` returns expected JSON
+* [ ] Login works
+* [ ] No HTML response is parsed as JSON
+
+### Complaint Upload
+
+* [ ] `/complaints` request reaches backend
+* [ ] Upload within allowed size succeeds
+* [ ] Oversized upload returns a controlled error
+* [ ] Backend/proxy upload limits are documented
+
+---
+
+# 14. Final RCA Conclusion
+
+The deployment problems were caused by multiple configuration issues rather than a single ECS/Fargate failure.
+
+The initial ECS instability was caused by an unsuccessful ALB health check. Once `/health` was correctly configured to return HTTP 200, the backend became reachable and healthy.
+
+The frontend registration issue was caused by an incorrectly formatted API base URL. Because the URL did not contain the HTTP protocol, the browser interpreted the backend hostname as a relative path and sent the request to the frontend host. Correcting `API_BASE_URL` resolved the URL-routing problem.
+
+A separate deployment-process gap was identified because the GitHub Actions workflow pushed the new frontend image to ECR but did not automatically update the ECS service. Therefore, a new ECS task-definition revision must be created and deployed after building the corrected image.
+
+The current complaint-upload HTTP 413 indicates that the request payload exceeds a configured limit. The exact component enforcing that limit still needs to be identified before applying the final fix. The frontend Nginx configuration can support an explicit upload limit, but because the browser sends `/complaints` directly to the backend ALB, the backend/proxy path must also be checked.
